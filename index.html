@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Particle Christmas Tree</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            background: radial-gradient(circle at center, #1b2735 0%, #090a0f 100%);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        .overlay {
+            position: absolute;
+            top: 30px;
+            left: 30px;
+            text-align: left;
+            pointer-events: none;
+            user-select: none;
+            z-index: 10;
+        }
+        
+        /* 修改：更收敛、优雅的字体风格 */
+        .title {
+            font-family: 'Times New Roman', Times, serif; /* 衬线体更显经典 */
+            font-size: 2rem;
+            color: rgba(255, 255, 255, 0.85); /* 降低纯白刺眼感 */
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8); /* 仅保留黑色投影，增加可读性 */
+            margin-bottom: 8px;
+            font-weight: normal; /* 去掉粗体 */
+            letter-spacing: 3px; /* 增加字间距 */
+            font-style: italic;
+        }
+
+        .hint {
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 0.85rem;
+            color: rgba(255, 255, 255, 0.5);
+            letter-spacing: 1px;
+            text-transform: uppercase; /* 大写显得更整洁 */
+        }
+    </style>
+</head>
+<body>
+
+<div class="overlay">
+    <div class="title">Merry Christmas 2025</div>
+    <div class="hint">Drag to Rotate</div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+/**
+ * 核心逻辑：粒子系统 + 3D投影
+ */
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+let width, height;
+let particles = [];
+let snowParticles = [];
+// 树叶粒子数
+const LEAF_COUNT = 1200; 
+const SNOW_COUNT = 200;
+
+// 3D 视图参数
+let focalLength = 800;
+let angleY = 0;
+let targetAngleY = 0;
+
+// 鼠标交互状态
+let isDragging = false;
+let lastMouseX = 0;
+
+function resize() {
+    width = canvas.width = window.innerWidth;
+    height = canvas.height = window.innerHeight;
+    focalLength = width * 0.8;
+}
+
+// ----------------------
+// 类定义：通用粒子 (Particle)
+// ----------------------
+class Particle {
+    constructor(type) {
+        this.type = type || 'leaf'; // leaf, ornament
+        this.reset();
+    }
+
+    reset() {
+        // --- 树叶/装饰逻辑 (圆锥体 Cone) ---
+        // y range: -200 (top) to 200 (bottom)
+        this.y = Math.random() * 450 - 200; 
+        
+        // 螺旋圆锥算法
+        const radius = (this.y + 200) * 0.5 + Math.random() * 20;
+        const spiralAngle = this.y * 0.1 + Math.random() * Math.PI * 2;
+
+        this.x = Math.cos(spiralAngle) * radius;
+        this.z = Math.sin(spiralAngle) * radius;
+
+        // 区分叶子和装饰球
+        if (Math.random() < 0.1) {
+            this.type = 'ornament';
+            const colors = ['#ff0000', '#ffd700', '#00ffff', '#ff69b4'];
+            this.color = colors[Math.floor(Math.random() * colors.length)];
+            this.baseSize = 2.5;
+        } else {
+            this.type = 'leaf';
+            const g = 150 + Math.floor(Math.random() * 105);
+            this.color = `rgb(0, ${g}, 0)`;
+            this.baseSize = 1.2;
+        }
+        
+        this.blinkOffset = Math.random() * 100;
+    }
+
+    update() {
+        if (this.type === 'ornament') {
+            this.blinkOffset += 0.05;
+        }
+    }
+
+    draw(ctx, centerX, centerY, rotationAngle) {
+        // 旋转变换
+        const cos = Math.cos(rotationAngle);
+        const sin = Math.sin(rotationAngle);
+        
+        const rx = this.x * cos - this.z * sin;
+        const rz = this.z * cos + this.x * sin;
+
+        // 透视投影
+        const perspective = focalLength / (focalLength + rz + 400);
+        this.scale = perspective; // 用于排序参考
+
+        if (perspective > 0) {
+            const px = centerX + rx * perspective;
+            const py = centerY + this.y * perspective;
+            const size = this.baseSize * perspective;
+
+            ctx.beginPath();
+            
+            if (this.type === 'ornament') {
+                const alpha = 0.7 + 0.3 * Math.sin(this.blinkOffset);
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = this.color;
+                ctx.arc(px, py, size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            } else {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(px, py, size, size);
+            }
+        }
+    }
+}
+
+// ----------------------
+// 类定义：雪花
+// ----------------------
+class Snow {
+    constructor() {
+        this.reset();
+    }
+    
+    reset() {
+        this.x = Math.random() * width;
+        this.y = Math.random() * -height;
+        this.z = Math.random() * 0.5 + 0.5;
+        this.size = Math.random() * 2 + 1;
+        this.speed = Math.random() * 1 + 0.5;
+    }
+
+    update() {
+        this.y += this.speed;
+        if (this.y > height) {
+            this.reset();
+        }
+    }
+
+    draw(ctx) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.4 * this.z})`;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size * this.z, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
+
+// ----------------------
+// 类定义：星星
+// ----------------------
+class Star {
+    constructor() {
+        this.time = 0;
+    }
+
+    draw(ctx, centerX, centerY, rotationAngle) {
+        this.time += 0.05;
+        const y = -215; 
+        const x = 0; 
+        const z = 0;
+
+        const cos = Math.cos(rotationAngle);
+        const sin = Math.sin(rotationAngle);
+        const rz = z * cos + x * sin;
+        
+        const perspective = focalLength / (focalLength + rz + 400);
+        const px = centerX;
+        const py = centerY + y * perspective;
+        
+        const outerRadius = 15 * perspective + Math.sin(this.time) * 2;
+        const innerRadius = 7 * perspective;
+        
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.beginPath();
+        ctx.fillStyle = "#ffff00";
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = "#ffcc00";
+        
+        for (let i = 0; i < 5; i++) {
+            ctx.lineTo(Math.cos((18 + i * 72) * Math.PI / 180) * outerRadius,
+                       -Math.sin((18 + i * 72) * Math.PI / 180) * outerRadius);
+            ctx.lineTo(Math.cos((54 + i * 72) * Math.PI / 180) * innerRadius,
+                       -Math.sin((54 + i * 72) * Math.PI / 180) * innerRadius);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+// ----------------------
+// 初始化
+// ----------------------
+
+function init() {
+    resize();
+    particles = [];
+    snowParticles = [];
+    
+    // 1. 生成树叶粒子
+    for (let i = 0; i < LEAF_COUNT; i++) {
+        particles.push(new Particle('leaf'));
+    }
+    
+    // 2. 生成雪花
+    for (let i = 0; i < SNOW_COUNT; i++) {
+        snowParticles.push(new Snow());
+    }
+
+    star = new Star();
+    animate();
+}
+
+let star;
+
+function animate() {
+    ctx.clearRect(0, 0, width, height);
+
+    const centerX = width / 2;
+    const centerY = height / 2 + 50; // 因为没有树干了，整体稍微下移一点会比较平衡
+
+    if (!isDragging) {
+        targetAngleY += 0.005;
+    }
+    angleY += (targetAngleY - angleY) * 0.1;
+
+    // 深度排序
+    particles.sort((a, b) => {
+        const cos = Math.cos(angleY);
+        const sin = Math.sin(angleY);
+        const zA = a.z * cos + a.x * sin;
+        const zB = b.z * cos + b.x * sin;
+        return zB - zA;
+    });
+
+    // 绘制后景雪花
+    snowParticles.forEach(snow => {
+        snow.update();
+        if(snow.z < 0.8) snow.draw(ctx);
+    });
+
+    // 绘制树
+    particles.forEach(p => {
+        p.update();
+        p.draw(ctx, centerX, centerY, angleY);
+    });
+    
+    // 绘制星星
+    star.draw(ctx, centerX, centerY, angleY);
+
+    // 绘制前景雪花
+    snowParticles.forEach(snow => {
+        if(snow.z >= 0.8) snow.draw(ctx);
+    });
+
+    requestAnimationFrame(animate);
+}
+
+window.addEventListener('resize', resize);
+
+function onDown(e) {
+    isDragging = true;
+    lastMouseX = e.clientX || e.touches[0].clientX;
+}
+
+function onMove(e) {
+    if (!isDragging) return;
+    const clientX = e.clientX || e.touches[0].clientX;
+    const deltaX = clientX - lastMouseX;
+    targetAngleY += deltaX * 0.005;
+    lastMouseX = clientX;
+}
+
+function onUp() {
+    isDragging = false;
+}
+
+canvas.addEventListener('mousedown', onDown);
+window.addEventListener('mousemove', onMove);
+window.addEventListener('mouseup', onUp);
+
+canvas.addEventListener('touchstart', onDown, {passive: false});
+window.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    onMove(e);
+}, {passive: false});
+window.addEventListener('touchend', onUp);
+
+init();
+
+</script>
+</body>
+</html>
